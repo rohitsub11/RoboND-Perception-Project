@@ -32,143 +32,35 @@ The following is a screenshot of the Gazebo workspace
 The goal of this exercise was to create 'object' and 'table' point cloud separately.
 
 
-1. Load the ROS msg Point Cloud data `pc2.PointCloud2` as `pcl_msg` into the `pcl_callback` function and convert it to PCL data. The input point cloud data with noise from RViz is shown below:
+1. Load the ROS msg Point Cloud data `pc2.PointCloud2` as `pcl_msg` into the `pcl_callback` function and convert it to PCL data. 
+Stepping through the `pcl_callback` function, we first conver the ros message to pcl with `ros_to_pcl` helper function. The input point cloud data with noise from RViz is shown below:
  ![input]
-```python
-# Convert ROS msg to PCL data
-cloud = ros_to_pcl(pcl_msg)
- ```
-2. Use the  "Statistical Outlier Filter" and "VoxelGrid Downsampling Filter" to get ride of the outliers and downsampling the point cloud data. This is shown in my code as follows:
-```python
-# Statistical Outlier Filter
-outlier_filter = cloud.make_statistical_outlier_filter()
-## Set the number of neighboring points to analyze for any given point
-outlier_filter.set_mean_k(20)
-## Any point with a mean distance larger than global will be considered out
-outlier_filter.set_std_dev_mul_thresh(0.3)
-cloud_filtered = outlier_filter.filter()
 
-# VoxelGrid Downsampling Filter
-vox = cloud_filtered.make_voxel_grid_filter()
-## Choose a voxel (also known as leaf) size
-LEAF_SIZE = 0.01
-## Set the voxel (or leaf) size  
-vox.set_leaf_size(LEAF_SIZE, LEAF_SIZE, LEAF_SIZE)
-## Call the filter function to obtain the resultant downsampled point cloud
-cloud_vox = vox.filter()
-```
-3. Use "Pass Through Filter" to crop the given 3D point cloud into different regions of interest. This is shown in my code as follows:
-```python
-# PassThrough Filter
-## Create a PassThrough filter object.
-passthrough = cloud_vox.make_passthrough_filter()
-## Assign z axis and range to the passthrough filter object.
-filter_axis = 'z'
-passthrough.set_filter_field_name(filter_axis)
-axis_min = 0.6
-axis_max = 1.2
-passthrough.set_filter_limits(axis_min, axis_max)
-## Use the filter function to obtain the resultant point cloud. 
-cloud_passthrough = passthrough.filter()
+2. Use the  "Statistical Outlier Filter" and "VoxelGrid Downsampling Filter" to get ride of the outliers and downsampling the point cloud data. Since there is noise in the data, statistical outlier filter is applied to remove this noise. The filter assumes a normal distribution and compares the neighboring points to the mean before classifying those points lying outside a threshold as outliers and discards them. In `perception_pipeline.py` this is done in lines `59-64`.
 
-## Use Another PassThrough Filter to select the final regions of interest.
-passthrough = cloud_passthrough.make_passthrough_filter()
-## Assign y axis and range to the passthrough filter object.
-filter_axis = 'y'
-passthrough.set_filter_field_name(filter_axis)
-axis_min = -0.5
-axis_max = 0.5
-passthrough.set_filter_limits(axis_min, axis_max)
-## Use the filter function to obtain the resultant point cloud. 
-cloud_passthrough = passthrough.filter()
-```
-4. Use RANSAC Plane Segmentation to identify points in your dataset that belong to a particular model. This is shown in my code as follows:
-```python
-# RANSAC Plane Segmentation
-## Create the segmentation object
-seg = cloud_passthrough.make_segmenter()
-## Set the model you wish to fit 
-seg.set_model_type(pcl.SACMODEL_PLANE)
-seg.set_method_type(pcl.SAC_RANSAC)
-## Max distance for a point to be considered fitting the model
-## Experiment with different values for max_distance 
-## for segmenting the table
-max_distance = 0.01
-seg.set_distance_threshold(max_distance)
-## Call the segment function to obtain set of inlier indices and model coefficients
-inliers, coefficients = seg.segment()
-```
-5. Extract Indices and Objects. This is shown in my code as follows:
-```python
-# Extract inliers (table) and outliers (objects)
-## Extract inliers
-cloud_table = cloud_passthrough.extract(inliers, negative=False)
-## Extract outliers
-cloud_objects = cloud_passthrough.extract(inliers, negative=True)
-```
+Voxel grid downsampling is then performed. Since the RGB-D camera provides a data-dense input represtations, we need to cut it down for processing. We define a box of a certain size in 3D world of pixels. Find the center, take the average value over all the pixels inside the box, assign it the the center and discard the rest. This is a trade-off that when balanced properly leads to a recognizable and accurate pointcloud representation of an object that isn't as data dense as it used to be. In `perception_pipeline.py` this is done in lines `68-77`.
+
+3. Use "Pass Through Filter" to crop the given 3D point cloud into different regions of interest. The passthrough filter acts as a cropping tool to cut off pixels beyond a given setting in the x,y,z space. For example in this project, if we know the height of the table that is in front of your robot (the top of which is making up it's workspace) you can discard pixels that come from below the height of the table (in the 'z' direction) over a specified range. This effectively eliminates everything below the table from the picture. In `perception_pipeline.py` this is done in lines `81-104`.
+
+4. Use RANSAC Plane Segmentation to identify points in your dataset that belong to a particular model. After the previous steps, the pixels forming the tabletop and objects sitting on it remain. To separate these from each other, Random Sample Consensus Algorithm is used. It looks for the components of geometric shapes in order to find the plane shape of the table and divide the pixels into ones that fit the plane (inliers) and ones that don't (outliers). In `perception_pipeline.py` this is done in lines `108-128`.
+
+5. Extract Indices and Objects. 
 The following image shows extracted objects:
 ![objects]
 
 #### 2. Complete Exercise 2 steps: Pipeline including clustering for segmentation implemented.  
-Use Euclidean Clustering to seperate different segmenetations.
-```python
-# Euclidean Clustering
-white_cloud = XYZRGB_to_XYZ(cloud_objects)
-tree = white_cloud.make_kdtree()
-## Create a cluster extraction object
-ec = white_cloud.make_EuclideanClusterExtraction()
-## Set tolerances for distance threshold as well as minimum and maximum cluster size (in points)
-ec.set_ClusterTolerance(0.01)
-ec.set_MinClusterSize(25)
-ec.set_MaxClusterSize(3000)
-## Search the k-d tree for clusters
-ec.set_SearchMethod(tree)
-## Extract indices for each of the discovered clusters
-cluster_indices = ec.Extract()
 
-# Create Cluster-Mask Point Cloud to visualize each cluster separately
-## Assign a color corresponding to each segmented object in scene
-cluster_color = get_color_list(len(cluster_indices))
-color_cluster_point_list = []
-for j, indices in enumerate(cluster_indices):
-    for i, indice in enumerate(indices):
-        color_cluster_point_list.append([white_cloud[indice][0],
-                                        white_cloud[indice][1],
-                                        white_cloud[indice][2],
-                                         rgb_to_float(cluster_color[j])])
-## Create new cloud containing all clusters, each with unique color
-cluster_cloud = pcl.PointCloud_PointXYZRGB()
-cluster_cloud.from_list(color_cluster_point_list)
-```
+The downside of RANSAC model fitting is that you have to compute it over the entire pointcloud once per object in order to filter out all the other objects and leave just one object of interest. This is not optimal. Also many objects in the scene look similar to each other geometrically (cylindrical objects like cups or cans) and therefore would be mistaken for each other by RANSAC. So we use other approaches to define our objects of interest. 
+
+So we apply K-D Tree Clustering. This requires x,y,z data only, no color. So a white-cloud is formed using a xyzrgb_to_xyz helper function. Clusters are found and extracted after min/max tolerances and cluster size are set. Colors are assigned to each cluster to distinguish them from one another. We have segmented our data into individual objects. For each point-cloud object we have RGB color data as well as 3-D spatial information. Now we need to identify what those objects are. In `perception_pipeline.py` this is done in lines `131-163`.
 
 After trial and error, I found appropriate values for the max and min cluster sizes as well as cluster tolerance and the result is shown in the following image:
 ![cluster]
 
 #### 3. Complete Exercise 3 Steps.  Features extracted and SVM trained.  Object recognition implemented.
-Following the "[Object Recognition](https://classroom.udacity.com/nanodegrees/nd209/parts/586e8e81-fc68-4f71-9cab-98ccd4766cfe/modules/e5bfcfbd-3f7d-43fe-8248-0c65d910345a/lessons/81e87a26-bd41-4d30-bc8b-e747312102c6/concepts/8389976c-550a-4fde-a530-65ca24b31f05)" steps to implement object recognition to the filtered 'objects' point cloud data. The snippets of code are shown below:
-```python
-# Classify the clusters! (loop through each detected cluster one at a time)
-detected_objects_labels = []
-detected_objects = []
-for index, pts_list in enumerate(cluster_indices):
-    ## Grab the points for the cluster
-    pcl_cluster = cloud_objects.extract(pts_list)
-    # Convert the cluster from pcl to ROS using helper function
-    ros_cluster = pcl_to_ros(pcl_cluster)
-    ## Extract histogram features
-    # complete this step just as you did before in capture_features.py
-    chists = compute_color_histograms(ros_cluster, True)
-    normals = get_normals(ros_cluster)
-    nhists = compute_normal_histograms(normals)
-    feature = np.concatenate((chists, nhists))
+Following the "[Object Recognition](https://classroom.udacity.com/nanodegrees/nd209/parts/586e8e81-fc68-4f71-9cab-98ccd4766cfe/modules/e5bfcfbd-3f7d-43fe-8248-0c65d910345a/lessons/81e87a26-bd41-4d30-bc8b-e747312102c6/concepts/8389976c-550a-4fde-a530-65ca24b31f05)" steps to implement object recognition to the filtered 'objects' point cloud data. The SVM classifier works based on the features of the data identified in the HSV color space and by the shape given by the surface normals. By 'binning up' our color data into color histogram bins, we can obtain a unique histogram signature of each object to learn from. Similarly, the distribution of surface normals contains shape information for each object that can be learned from. A support vector machine is used to characterize the parameter space into distinct classes. This algorithm draws decision boundaries around data groups, evaluates the level of success of these boundaries compared to a ground-truth label (requires labeled data for training) and then iteratively improves on the best location for the boundaries. After the feature space has been subdivided in this way, new unlabeled data can be categorized simply via reference to where it falls in the space due to its features. In other words it can be used for object recognition.
 
-    ## Make the prediction, retrieve the label for the result and add it to detected_objects_labels list
-    prediction = clf.predict(scaler.transform(feature.reshape(1,-1)))
-    label = encoder.inverse_transform(prediction)[0]
-    detected_objects_labels.append(label)
-```
-
-Capture point cloud features based on the project models instead of the exercise models. First, I changed the models in `capture_features.py`:
+First, I changed the models in `capture_features.py`:
 ```
 models = [
     'biscuits',
@@ -181,42 +73,21 @@ models = [
     'soda_can',
     'sticky_notes']
 ```
-In a terminal window, run:
-```
-$ cd ~/catkin_ws
-$ roslaunch sensor_stick training.launch
-```
-In another terminal window, run:
-```
-$ cd ~/catkin_ws
-$ rosrun sensor_stick capture_features.py
-```
-After the features were captured, run:
-```
-$ rosrun sensor_stick train_svm.py
-```
-The training results are:
+
+The confusion matrix below demonstrates the accuracy of recognition across every type of object trained. An overall accuracy of 91% (+/- 0.05) was attained.
 
 ![training]
 ![confusion_norm]
 ![confusion_nonnorm]
 
-The accuracy was 91% (+/- 0.05). 
 It also created the model file `model.sav` which i renamed to `model_new.sav` to separate from exercise models.
 
-The `pr2_mover()` function is to load parameters and request PickPlace service. It create ROS messages containing the details of each object (name, pick_pose, etc.) and writes these messages out to different `output_*.yaml` files corresponding to different 'pick list' scenarios.
+The flow of object recognition is implemented in the following manner: Instantiate two empty lists: one for detected objects and one for labels. Loop over the list of euclidean-clustered objects, extracting those points which correspond to our extracted_outliers. Convert to ROS from PCL. Compute associated feature vectors using compute_color_histograms and compute_normal_histograms functions. Normalize and concatenate these into a feature vector. Use the SVM boundaries to predict the identity of the object based on it's feature vector. Assign a label based on the prediction. Add the labeled object to the detected object list. Publish the detected objects list.
 
 
 ### Pick and Place Setup
 ### Project Process
-In a terminal window, run:
-```
-$ roslaunch pr2_robot pick_place_project.launch
-```
-In another terminal winodw, run:
-```
-rosrun pr2_robot object_recognition.py
-```
+After the pcl_callback function comes the pr2_mover function. This function loads the parameters with regard to the scene/object data and requests a pick/place service. A number of variables are initialized including the object name, group, pick_pose, place_pose and the arm needed to grab the object. The centroid of each object is calculated as the mean of it's numpy points array. This will be used later to define the pick_pose. The pick list is then parsed and looped over in order to assign appropriate data to the variables we defined above for each object. The pick_list object name data field is compared to the label of a point cloud object and when they match, the scalar-version of the centroid data is assigned as that object's pick-pose data. The place pose is defined based on the object's group. Arm data is assigned accordingly. This data is then written out in yaml dictionary format for a pick_place routine to use in directing robot motion.
 
 #### 1. For all three tabletop setups (`test*.world`), perform object recognition, then read in respective pick list (`pick_list_*.yaml`). Next construct the messages that would comprise a valid `PickPlace` request output them to `.yaml` format.
 
